@@ -219,7 +219,10 @@
       position: fixed;
       left: 40px;
       top: 50%;
-      transform: translateY(-50%);
+      /* --dx/--dy/--rx/--ry/--s are written every frame by the tear script,
+         so the panel rides the same tilting photo plane as the background */
+      --dx: 0px; --dy: 0px; --rx: 0deg; --ry: 0deg; --s: 1;
+      transform: translateY(-50%) perspective(900px) translate3d(var(--dx), var(--dy), 0) rotateX(var(--rx)) rotateY(var(--ry)) scale(var(--s));
       z-index: 2;
       width: 304px;
       padding: 12px 8px 8px;
@@ -494,7 +497,7 @@
         left: 12px; right: 12px; bottom: 12px;
         top: auto;
         width: auto;
-        transform: none;
+        transform: perspective(900px) translate3d(var(--dx), var(--dy), 0) rotateX(var(--rx)) rotateY(var(--ry)) scale(var(--s));
         border-radius: 24px;
         /* on phones the panel sits over the white backdrop, so a light smoke tint keeps text readable */
         background: linear-gradient(135deg, rgba(20,24,32,0.22) 0%, rgba(20,24,32,0.34) 100%);
@@ -981,6 +984,46 @@
       window.addEventListener('resize', resize);
       document.body.classList.add('fx-on');
 
+      /* Keep the links panel glued to the photo plane. The shader samples the photo at
+         c * (1 + depth(c)), so whatever sits at c0 is drawn at c0 / (1 + depth): the panel
+         gets that same shift and scale, and tilts along the slope of depth. */
+      const TILT_AMT = reduced ? 0 : 0.18, DENT_AMT = reduced ? 0 : 0.10;
+      const REEL_FOLLOW = 0.35;
+      const reelEl = document.querySelector('.reel');
+      const applied = { dx: 0, dy: 0, rx: 0, ry: 0, s: 1 };
+      function syncReel() {
+        if (!reelEl) return;
+        const r = reelEl.getBoundingClientRect();
+        const W = window.innerWidth, H = window.innerHeight;
+        // the panel's resting centre, in the shader's centred space (y up, height = 1)
+        const cx = ((r.left + r.width / 2 - applied.dx) / W - 0.5) * aspect;
+        const cy = 0.5 - (r.top + r.height / 2 - applied.dy) / H;
+        const ex = cx - tilt[0], ey = cy - tilt[1];
+        const dent = DENT_AMT * Math.exp(-(ex * ex + ey * ey) * 5.5);
+        const depth = (cx * tilt[0] + cy * tilt[1]) * TILT_AMT + dent;
+        const gx = tilt[0] * TILT_AMT - 11 * ex * dent;
+        const gy = tilt[1] * TILT_AMT - 11 * ey * dent;
+        // full tilt, but only a share of the shift and shrink: at full strength the panel
+        // would slide off-screen and back away from a cursor that is trying to click it
+        const k = (1 / (1 + depth) - 1) * REEL_FOLLOW;
+        const restLeft = r.left - applied.dx - r.width * (1 - applied.s) / 2;
+        const v = {
+          dx: Math.max(cx * k * H, 12 - restLeft),
+          dy: -cy * k * H,
+          rx: gy * 38,      // the side the plane sinks toward turns away from the viewer
+          ry: gx * 38,
+          s: 1 + k
+        };
+        if (Math.abs(v.dx - applied.dx) + Math.abs(v.dy - applied.dy) + Math.abs(v.rx - applied.rx) +
+            Math.abs(v.ry - applied.ry) + Math.abs(v.s - applied.s) * 100 < 0.01) return;
+        Object.assign(applied, v);
+        reelEl.style.setProperty('--dx', v.dx.toFixed(2) + 'px');
+        reelEl.style.setProperty('--dy', v.dy.toFixed(2) + 'px');
+        reelEl.style.setProperty('--rx', v.rx.toFixed(3) + 'deg');
+        reelEl.style.setProperty('--ry', v.ry.toFixed(3) + 'deg');
+        reelEl.style.setProperty('--s', v.s.toFixed(4));
+      }
+
       let time = 0, last = performance.now(), raf = 0;
       function frame(now) {
         raf = requestAnimationFrame(frame);
@@ -1049,13 +1092,14 @@
         gl.uniform1f(mu.uAspect, aspect);
         gl.uniform1f(mu.uImgAspect, img.width / img.height);
         gl.uniform1f(mu.uAberration, reduced ? 0.5 : 2.2);
-        gl.uniform1f(mu.uTiltAmt, reduced ? 0 : 0.18);
-        gl.uniform1f(mu.uDentAmt, reduced ? 0 : 0.10);
+        gl.uniform1f(mu.uTiltAmt, TILT_AMT);
+        gl.uniform1f(mu.uDentAmt, DENT_AMT);
         gl.uniform1f(mu.uZoom, 0.84 - 0.10 * (1 - intro));
         gl.uniform1f(mu.uIntro, intro);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
         targets.reverse();
+        syncReel();
       }
       raf = requestAnimationFrame(frame);
 
